@@ -127,7 +127,7 @@ export function useNetworkStatus() {
     return () => clearInterval(interval);
   }, []);
 
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://india-innovate-backend.onrender.com";
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
   // Fetch simulated network status for ALL nodes (from simulation backend)
   useEffect(() => {

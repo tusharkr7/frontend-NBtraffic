@@ -538,6 +538,11 @@ export default function IntersectionPage() {
   const [codeRed, setCodeRed] = useState(false);
   const [codeRedTimer, setCodeRedTimer] = useState<number>(0);
 
+  // Custom Green
+  const [customGreenTimes, setCustomGreenTimes] = useState<Record<string, string>>({
+    "01": "", "02": "", "03": "", "04": ""
+  });
+
   // Live status from API
   const [liveStatus, setLiveStatus] = useState<string>("Green");
   const [streamActive, setStreamActive] = useState<boolean>(false);
@@ -565,13 +570,14 @@ export default function IntersectionPage() {
   }, []);
 
   const prevPhaseRef = useRef<string>("");
+  const overrideRef = useRef<{ dir: string, endTime: number } | null>(null);
 
   useEffect(() => {
     if (!intersection?.nodeId) return;
     
     const fetchTraffic = async () => {
       try {
-        const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://india-innovate-backend.onrender.com";
+        const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8001";
         const res = await fetch(`${API_URL}/api/traffic/${intersection.nodeId}`);
         if (!res.ok) return;
         const data = await res.json();
@@ -601,6 +607,19 @@ export default function IntersectionPage() {
           }
         }
         
+        // Apply local override to prevent frontend flickering while waiting for Jetson
+        if (overrideRef.current) {
+          if (Date.now() < overrideRef.current.endTime) {
+            const oDir = overrideRef.current.dir;
+            Object.keys(newLaneStates).forEach(k => {
+              if (k !== oDir) newLaneStates[k] = "RED";
+            });
+            newLaneStates[oDir] = "GRN";
+          } else {
+            overrideRef.current = null;
+          }
+        }
+
         setLaneStates(newLaneStates as Record<string, "RED" | "YEL" | "GRN">);
         
         if (data.lane_metrics) {
@@ -752,11 +771,17 @@ export default function IntersectionPage() {
     }
 
     // Send Jetson API Call
-    const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://india-innovate-backend.onrender.com";
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
     fetch(`${API_URL}/api/override`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ nodeId: intersection?.nodeId || "unknown", lane: dir, state: next, reason })
+      body: JSON.stringify({ 
+        nodeId: intersection?.nodeId || "unknown", 
+        lane: dir, 
+        state: next, 
+        reason,
+        ...(next === "GRN" ? { green_time: 45 } : {})
+      })
     }).catch(e => console.error("Failed to signal Jetson", e));
 
     if (!laneActive[dir]) setLaneActive((p) => ({ ...p, [dir]: true }));
@@ -765,37 +790,43 @@ export default function IntersectionPage() {
     showToast(`${dir} → ${next}`, "success");
   };
 
-  /* ── Quick state switch (Unlocked Mode) ── */
-  const handleQuickSwitch = (dir: string, targetState: "RED" | "YEL" | "GRN") => {
-    if (laneStates[dir] === targetState) return;
+  /* ── Custom Green Time Override ── */
+  const handleCustomGreen = (dir: string, customGreenTime: number) => {
+    overrideRef.current = { dir, endTime: Date.now() + customGreenTime * 1000 };
     
     setLaneStates((p) => {
       const newState = { ...p };
-      if (targetState === "GRN" || targetState === "YEL") {
-        // Ensure standard intersection safety (no concurrent greens in cross traffic)
-        Object.keys(newState).forEach(k => {
-          if (k !== dir) newState[k] = "RED"; 
-        });
-      }
-      newState[dir] = targetState;
+      Object.keys(newState).forEach(k => {
+        if (k !== dir) newState[k] = "RED"; 
+      });
+      newState[dir] = "GRN";
       return newState;
     });
 
-    if (targetState === "GRN") {
-      setLaneGreenTimers(p => ({ ...p, [dir]: 45 }));
-      setLaneWaitTimers(p => ({ ...p, [dir]: 0 }));
-    }
+    setLaneGreenTimers(p => ({ ...p, [dir]: customGreenTime }));
+    setLaneWaitTimers(p => ({ ...p, [dir]: 0 }));
 
-    // Send Jetson API Call
-    const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://india-innovate-backend.onrender.com";
+    // Send Jetson API Call payload with required attributes
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
     fetch(`${API_URL}/api/override`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ nodeId: intersection?.nodeId || "unknown", lane: dir, state: targetState, reason: "Manual Quick Switch" })
+      body: JSON.stringify({ 
+        nodeId: intersection?.nodeId || "unknown", 
+        lane: dir, 
+        state: "GRN", 
+        reason: "Manual Custom Green Time",
+        green_time: customGreenTime 
+      })
     }).catch(e => console.error("Failed to signal Jetson", e));
 
-    addAudit(dir, targetState, "Manual quick switch (Unlocked)");
-    showToast(`${dir} manually set to ${targetState}`, "success");
+    if (!laneActive[dir]) setLaneActive((p) => ({ ...p, [dir]: true }));
+    addAudit(dir, "GRN", `Manual override (${customGreenTime}s)`);
+    showToast(`${dir} set to GREEN for ${customGreenTime}s`, "success");
+    
+    // Close the panel and clear custom input
+    setUnlockedLanes((p) => ({ ...p, [dir]: false }));
+    setCustomGreenTimes((p) => ({ ...p, [dir]: "" }));
   };
 
   /* ── Override toggle ── */
@@ -1056,35 +1087,36 @@ export default function IntersectionPage() {
                         {/* Expanded controls when unlocked */}
                         {isUnlocked && (
                           <div className="px-3 pb-3 border-t border-gray-100 dark:border-slate-700/30 pt-3 mt-0">
-                            {/* Signal state buttons */}
-                            <div className="flex items-center gap-2 mb-2">
-                              {([
-                                ["RED", "bg-red-500 hover:bg-red-600 text-white", "ring-red-400"],
-                                ["YEL", "bg-amber-500 hover:bg-amber-600 text-white", "ring-amber-400"],
-                                ["GRN", "bg-green-500 hover:bg-green-600 text-white", "ring-green-400"],
-                              ] as const).map(([st, cls, ring]) => (
+                            <div className="flex flex-col gap-2 mb-1">
+                              <label className="text-[10px] text-gray-500 font-mono uppercase">Set Custom Green Time (s)</label>
+                              <div className="flex items-center gap-2">
+                                <input 
+                                  type="number" 
+                                  min="10"
+                                  value={customGreenTimes[dir] || ""}
+                                  onChange={(e) => setCustomGreenTimes(prev => ({...prev, [dir]: e.target.value}))}
+                                  placeholder="Seconds..." 
+                                  className="flex-1 text-xs py-1.5 px-2 rounded-lg border border-gray-200 dark:border-slate-600 outline-none bg-white dark:bg-slate-800 text-gray-800 dark:text-slate-200 focus:border-blue-400 dark:focus:border-cyan-500"
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      const t = parseInt(customGreenTimes[dir] || "0", 10);
+                                      if (t >= 10) handleCustomGreen(dir, t);
+                                      else showToast("Minimum green time is 10s", "error");
+                                    }
+                                  }}
+                                />
                                 <button
-                                  key={st}
-                                  onClick={() => handleQuickSwitch(dir, st)}
-                                  className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all border ${current === st
-                                    ? `${cls} border-transparent shadow ring-2 ring-offset-1 ring-offset-white dark:ring-offset-slate-800 ${ring}`
-                                    : "bg-white dark:bg-slate-700 border-gray-200 dark:border-slate-600 text-gray-600 dark:text-slate-300 hover:bg-gray-50 dark:hover:bg-slate-600"
-                                    }`}
+                                  onClick={() => {
+                                    const t = parseInt(customGreenTimes[dir] || "0", 10);
+                                    if (t >= 10) handleCustomGreen(dir, t);
+                                    else showToast("Minimum green time is 10s", "error");
+                                  }}
+                                  className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white text-[10px] font-bold uppercase tracking-wider rounded-md transition-all shadow-sm"
                                 >
-                                  {st}
+                                  SET GREEN
                                 </button>
-                              ))}
+                              </div>
                             </div>
-
-                            {/* Confirm change modal */}
-                            {isConfirming && (
-                              <ConfirmChangeModal
-                                dir={dir}
-                                currentState={current}
-                                onConfirm={(reason) => handleConfirmedChange(dir, reason)}
-                                onCancel={() => setConfirmChangeLane(null)}
-                              />
-                            )}
                           </div>
                         )}
                       </div>

@@ -56,9 +56,15 @@ def on_mqtt_message(client, userdata, msg):
             
         events = raw_data.get("critical_events_this_minus_cycle") or raw_data.get("critical_events_this_minute", {})
         db = database.SessionLocal()
+        timestamp_str = raw_data.get("timestamp")
+        if timestamp_str:
+            parsed_timestamp = datetime.datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        else:
+            parsed_timestamp = datetime.datetime.utcnow()
+
         db_metrics = models.TrafficMetricsRecord(
             node_id=node_id,
-            timestamp=raw_data.get("timestamp", datetime.datetime.utcnow().isoformat()),
+            timestamp=parsed_timestamp,
             state_snapshot=raw_data.get("state_snapshot", {}),
             lane_metrics=raw_data.get("lane_metrics", {}),
             critical_events_this_minute=events

@@ -59,7 +59,7 @@ function TelemetryMarkers({ onSelectIntersection, isDark }: { onSelectIntersecti
   useEffect(() => {
     const fetchLive = async () => {
       try {
-        const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://india-innovate-backend.onrender.com";
+        const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
         const res = await fetch(`${API_URL}/api/traffic`);
         if (!res.ok) return;
         const data: any[] = await res.json();
